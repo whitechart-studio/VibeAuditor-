@@ -44,6 +44,12 @@ Write JSON for CI or AI agents:
 PYTHONPATH=src python3 -m vibeauditor . --json report.json
 ```
 
+Write a bucketed Markdown report for GitHub issues, PR comments, or product review:
+
+```bash
+PYTHONPATH=src python3 -m vibeauditor . --markdown vibeauditor-report.md
+```
+
 Fail CI when high or critical findings exist:
 
 ```bash
@@ -99,6 +105,37 @@ security tools.
 | SBOM | Syft | software bill of materials |
 | SBOM vulnerabilities | Grype | vulnerability scan from filesystem/SBOM |
 | Live app | ZAP | dynamic web app security testing |
+
+## Report Model
+
+vibeAuditor groups findings into product-risk domains instead of dumping a flat
+scanner list:
+
+- Secrets & Credentials
+- Auth & Access Control
+- Data Privacy & RLS
+- Payments & Webhooks
+- AI / LLM Safety
+- Supply Chain
+- Infrastructure & Deployment
+- General Code Quality
+
+Each finding includes:
+
+- severity
+- product risk: `Blocker`, `High`, `Medium`, `Low`
+- confidence
+- domain bucket
+- stable fingerprint
+- product impact
+- AI fix prompt
+- verification step
+
+This structure is designed for the next GitHub workflow:
+
+```text
+scan project -> bucket findings -> create/update GitHub issues -> close fixed buckets
+```
 
 ## Planned Rule Packs
 
