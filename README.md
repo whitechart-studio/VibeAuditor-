@@ -28,8 +28,20 @@ scanners such as Trivy, Semgrep, OSV-Scanner, Gitleaks, Syft, Grype, and ZAP.
 
 ## Quick Start
 
+Install from a local checkout:
+
 ```bash
-python3 -m vibeauditor /path/to/project
+pipx install .
+```
+
+Or during active development:
+
+```bash
+pipx install --editable .
+```
+
+```bash
+vibeauditor /path/to/project
 ```
 
 From this repository during development:
@@ -41,32 +53,32 @@ PYTHONPATH=src python3 -m vibeauditor .
 Write JSON for CI or AI agents:
 
 ```bash
-PYTHONPATH=src python3 -m vibeauditor . --json report.json
+vibeauditor . --json report.json
 ```
 
 Write a bucketed Markdown report for GitHub issues, PR comments, or product review:
 
 ```bash
-PYTHONPATH=src python3 -m vibeauditor . --markdown vibeauditor-report.md
+vibeauditor . --markdown vibeauditor-report.md
 ```
 
 Write a GitHub issue-friendly report with detailed finding sections instead of
 wide tables:
 
 ```bash
-PYTHONPATH=src python3 -m vibeauditor . --github-markdown vibeauditor-github.md
+vibeauditor . --github-markdown vibeauditor-github.md
 ```
 
 Fail CI when high or critical findings exist:
 
 ```bash
-PYTHONPATH=src python3 -m vibeauditor . --fail-on high
+vibeauditor . --fail-on high
 ```
 
 Use a project profile:
 
 ```bash
-PYTHONPATH=src python3 -m vibeauditor . --profile next-supabase
+vibeauditor . --profile next-supabase
 ```
 
 GitHub Actions template:
@@ -93,7 +105,106 @@ gitleaks detect --source .
 Use:
 
 ```bash
-PYTHONPATH=src python3 -m vibeauditor . --external
+vibeauditor . --external
+```
+
+## Example Output
+
+vibeAuditor leads with a product decision, not a raw vulnerability dump:
+
+```text
+vibeAuditor Report
+==================
+
+Profile: next-supabase - Next.js and Supabase pre-ship checks.
+Focus: supabase, auth, secrets, dependencies
+
+Findings: 9 (critical 3, high 1, medium 5, low 0)
+Verdict: BLOCKED - fix blocker findings before production
+Primary reason: Credentials detected in env, source, or build output
+Product risk: Blocker 3, High 1, Medium 3, Low 2
+
+Top Actions
+-----------
+1. Rotate exposed credentials, remove real keys from env/build artifacts, and rerun gitleaks plus vibeAuditor.
+2. Verify every write path derives identity from the server/session and blocks cross-user access with tests.
+3. Prove RLS-sensitive tables deny direct anon/authenticated access or document SECURITY DEFINER-only access.
+
+Risk Buckets
+------------
+| Domain                | Risk    | Findings | Status                |
+| --------------------- | ------- | -------- | --------------------- |
+| Secrets & Credentials | Blocker | 4        | Needs fix before ship |
+| Auth & Access Control | High    | 1        | Needs owner review    |
+| Data Privacy & RLS    | Medium  | 2        | Needs verification    |
+| Developer Tooling     | Low     | 2        | Optional hardening    |
+```
+
+Detailed sections include asset context, confidence, product impact, AI fix
+prompt, verification steps, and safely redacted evidence:
+
+```text
+Secrets & Credentials
+---------------------
+| Risk    | Conf      | Asset          | Location                     | Issue                              |
+| ------- | --------- | -------------- | ---------------------------- | ---------------------------------- |
+| Blocker | confirmed | local_env      | .env:2                       | Possible Supabase JWT-like key... |
+| Blocker | confirmed | build_artifact | dist-ssr/entry-server.js:126 | Possible Supabase JWT-like key... |
+
+AI fix prompt:
+You are fixing credential exposure in this project. A Supabase JWT-like key was
+found in build_artifact. Do not remove required runtime env usage. Ensure
+browser/client code only receives public anon keys, never service-role or
+private keys. Remove real values from env/build artifacts, update .env.example
+with placeholders, verify .gitignore excludes local env and generated build
+output, rotate any exposed credential, then rerun vibeAuditor and gitleaks.
+
+Verification:
+git ls-files .env .env.local dist-ssr/entry-server.js
+gitleaks detect --source .
+vibeauditor . --profile next-supabase
+```
+
+With `--external`, scanner coverage is summarized in the same report:
+
+```text
+Tooling Coverage
+----------------
+- Trivy: secrets found in .env and build output
+- Semgrep: shell/spawn usage in developer scripts
+- OSV-Scanner: no dependency issues found
+- Gitleaks: leak detected in git history
+- Syft: package inventory generated
+- Grype: no vulnerabilities found
+```
+
+For GitHub issues, use the sectioned format:
+
+```bash
+vibeauditor . --profile next-supabase --github-markdown vibeauditor-github.md
+```
+
+It produces issue-friendly blocks like:
+
+```markdown
+## Secrets & Credentials
+
+**Bucket risk:** Blocker
+**Findings:** 4
+
+### VA002: Possible Supabase JWT-like key exposed
+
+- **Risk:** Blocker
+- **Confidence:** confirmed
+- **Asset context:** `build_artifact`
+- **Location:** `dist-ssr/entry-server.js:126`
+- **Fingerprint:** `0259095bde85a569`
+
+**Product impact**
+
+A Supabase JWT-like credential appears in build_artifact. If this is a
+service-role key, it can bypass RLS and expose marketplace user, worker,
+contractor, OTP, or payment data.
 ```
 
 ## Scanner Blend
