@@ -29,6 +29,7 @@ class Finding:
     domain: str | None = None
     product_risk: str | None = None
     confidence: str = "medium"
+    asset_context: str | None = None
     ai_fix_prompt: str | None = None
     verification: str | None = None
     likely_false_positive: bool = False
@@ -46,6 +47,7 @@ class Finding:
             "severity": self.severity,
             "product_risk": self.product_risk or product_risk_for_severity(self.severity),
             "confidence": self.confidence,
+            "asset_context": self.asset_context or "unknown",
             "domain": self.domain or domain_for_category(self.category),
             "path": self.path,
             "line": self.line,
@@ -90,6 +92,7 @@ DOMAIN_BY_CATEGORY = {
     "ai": "AI / LLM Safety",
     "dependencies": "Supply Chain",
     "code-execution": "Infrastructure & Deployment",
+    "developer-tooling": "Developer Tooling",
 }
 
 PRODUCT_RISK_BY_SEVERITY = {
@@ -113,7 +116,7 @@ def default_ai_fix_prompt(finding: Finding) -> str:
     location = finding.path if finding.line is None else f"{finding.path}:{finding.line}"
     return (
         f"Fix the vibeAuditor finding {finding.rule_id} at {location}. "
-        f"Issue: {finding.title}. Product risk: {finding.message} "
+        f"Issue: {finding.title}. Asset context: {finding.asset_context or 'unknown'}. Product risk: {finding.message} "
         f"Make the smallest safe code or configuration change, preserve intended behavior, "
         f"and add or describe a verification step. Recommended fix: {finding.fix}"
     )
@@ -132,4 +135,6 @@ def default_verification(finding: Finding) -> str:
         return "Run a prompt-injection test and confirm model output cannot trigger unapproved actions."
     if finding.category == "dependencies":
         return "Regenerate the lockfile and run OSV-Scanner or Trivy with no unresolved high-risk findings."
+    if finding.category == "developer-tooling":
+        return "Confirm the script only accepts trusted static commands and cannot be reached from user or model input."
     return "Run the app tests plus vibeAuditor again and confirm this finding is gone or intentionally suppressed."

@@ -41,6 +41,9 @@ def render_text(
         f"(critical {counts['critical']}, high {counts['high']}, medium {counts['medium']}, low {counts['low']})"
     )
     lines.append(f"Verdict: {verdict(findings)}")
+    primary_reason = primary_blocker_reason(findings)
+    if primary_reason:
+        lines.append(f"Primary reason: {primary_reason}")
     if findings:
         lines.append(
             "Product risk: "
@@ -49,6 +52,17 @@ def render_text(
     lines.append("")
 
     if findings:
+        lines.append("Top Actions")
+        lines.append("-----------")
+        for index, action in enumerate(top_actions(findings), start=1):
+            lines.append(f"{index}. {action}")
+        lines.append("")
+
+        lines.append("Risk Buckets")
+        lines.append("------------")
+        lines.extend(render_bucket_summary(findings))
+        lines.append("")
+
         for domain, domain_findings in bucket_findings(findings).items():
             lines.append(domain)
             lines.append("-" * len(domain))
@@ -59,8 +73,8 @@ def render_text(
         lines.append("")
 
     if external:
-        lines.append("External Scanner Status")
-        lines.append("-----------------------")
+        lines.append("Tooling Coverage")
+        lines.append("----------------")
         for result in external:
             status = "available" if result.available else "missing"
             exit_text = "" if result.exit_code is None else f", exit {result.exit_code}"
@@ -103,6 +117,15 @@ def write_markdown(
     path.write_text(render_markdown(findings, external, profile=profile), encoding="utf-8")
 
 
+def write_github_markdown(
+    path: Path,
+    findings: list[Finding],
+    external: list[ExternalResult],
+    profile: Profile | None = None,
+) -> None:
+    path.write_text(render_github_markdown(findings, external, profile=profile), encoding="utf-8")
+
+
 def render_markdown(
     findings: list[Finding],
     external: list[ExternalResult],
@@ -118,6 +141,10 @@ def render_markdown(
         lines.append("")
     lines.append(f"**Verdict:** {verdict(findings)}")
     lines.append("")
+    primary_reason = primary_blocker_reason(findings)
+    if primary_reason:
+        lines.append(f"**Primary reason:** {primary_reason}")
+        lines.append("")
     lines.append(
         f"**Findings:** {len(findings)} "
         f"(critical {counts['critical']}, high {counts['high']}, medium {counts['medium']}, low {counts['low']})"
@@ -131,6 +158,20 @@ def render_markdown(
     lines.append("")
 
     if findings:
+        lines.append("## Top Actions")
+        lines.append("")
+        for index, action in enumerate(top_actions(findings), start=1):
+            lines.append(f"{index}. {action}")
+        lines.append("")
+
+        lines.append("## Risk Buckets")
+        lines.append("")
+        lines.append("| Domain | Risk | Findings | Status |")
+        lines.append("| --- | --- | ---: | --- |")
+        for row in bucket_summary_rows(findings):
+            lines.append(f"| {escape_md(row['domain'])} | {escape_md(row['risk'])} | {row['count']} | {escape_md(row['status'])} |")
+        lines.append("")
+
         for domain, domain_findings in bucket_findings(findings).items():
             lines.append(f"## {domain}")
             lines.append("")
@@ -159,7 +200,7 @@ def render_markdown(
         lines.append("")
 
     if external:
-        lines.append("## External Scanner Status")
+        lines.append("## Tooling Coverage")
         lines.append("")
         lines.append("| Scanner command | Status | Summary |")
         lines.append("| --- | --- | --- |")
@@ -168,6 +209,87 @@ def render_markdown(
             if result.exit_code is not None:
                 status = f"{status}, exit {result.exit_code}"
             lines.append(f"| `{escape_md(result.command)}` | {escape_md(status)} | {escape_md(result.summary)} |")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def render_github_markdown(
+    findings: list[Finding],
+    external: list[ExternalResult],
+    profile: Profile | None = None,
+) -> str:
+    counts = Counter(finding.severity for finding in findings)
+    lines = ["# vibeAuditor Product Risk Report", ""]
+    if profile:
+        lines.append(f"**Profile:** `{profile.name}`")
+        lines.append("")
+    lines.append(f"**Verdict:** {verdict(findings)}")
+    reason = primary_blocker_reason(findings)
+    if reason:
+        lines.append(f"**Primary reason:** {reason}")
+    lines.append(f"**Findings:** {len(findings)} total, {counts['critical']} critical, {counts['high']} high, {counts['medium']} medium")
+    lines.append("")
+
+    if findings:
+        lines.append("## Top Actions")
+        lines.append("")
+        for index, action in enumerate(top_actions(findings), start=1):
+            lines.append(f"{index}. {action}")
+        lines.append("")
+
+        lines.append("## Risk Buckets")
+        lines.append("")
+        lines.append("| Domain | Risk | Findings | Status |")
+        lines.append("| --- | --- | ---: | --- |")
+        for row in bucket_summary_rows(findings):
+            lines.append(f"| {escape_md(row['domain'])} | {escape_md(row['risk'])} | {row['count']} | {escape_md(row['status'])} |")
+        lines.append("")
+
+        for domain, domain_findings in bucket_findings(findings).items():
+            lines.append(f"## {domain}")
+            lines.append("")
+            lines.append(f"**Bucket risk:** {highest_product_risk(domain_findings)}")
+            lines.append(f"**Findings:** {len(domain_findings)}")
+            lines.append("")
+            for finding in domain_findings:
+                data = finding.to_dict()
+                lines.append(f"### {finding.rule_id}: {finding.title}")
+                lines.append("")
+                lines.append(f"- **Risk:** {data['product_risk']}")
+                lines.append(f"- **Confidence:** {data['confidence']}")
+                lines.append(f"- **Asset context:** `{data['asset_context']}`")
+                lines.append(f"- **Location:** `{location(finding)}`")
+                lines.append(f"- **Fingerprint:** `{data['fingerprint']}`")
+                if finding.evidence:
+                    lines.append(f"- **Evidence:** `{escape_md(finding.evidence)}`")
+                lines.append("")
+                lines.append("**Product impact**")
+                lines.append("")
+                lines.append(f"{finding.message}")
+                lines.append("")
+                lines.append("**AI fix prompt**")
+                lines.append("")
+                lines.append("```text")
+                lines.append(data["ai_fix_prompt"])
+                lines.append("```")
+                lines.append("")
+                lines.append("**Verification**")
+                lines.append("")
+                lines.append(f"```{verification_fence(data['verification'])}")
+                lines.append(data["verification"])
+                lines.append("```")
+                lines.append("")
+    else:
+        lines.append("No built-in findings. Keep external scanner coverage enabled before production.")
+        lines.append("")
+
+    if external:
+        lines.append("## Tooling Coverage")
+        lines.append("")
+        for result in external:
+            status = "available" if result.available else "missing"
+            lines.append(f"- `{result.command}`: {status}")
         lines.append("")
 
     return "\n".join(lines)
@@ -195,20 +317,96 @@ def bucket_findings(findings: list[Finding]) -> dict[str, list[Finding]]:
     return dict(grouped)
 
 
+def top_actions(findings: list[Finding], limit: int = 3) -> list[str]:
+    actions: list[str] = []
+    domains = bucket_findings(findings)
+    if "Secrets & Credentials" in domains:
+        actions.append("Rotate exposed credentials, remove real keys from env/build artifacts, and rerun gitleaks plus vibeAuditor.")
+    if "Auth & Access Control" in domains:
+        actions.append("Verify every write path derives identity from the server/session and blocks cross-user access with tests.")
+    if "Data Privacy & RLS" in domains:
+        actions.append("Prove RLS-sensitive tables deny direct anon/authenticated access or document SECURITY DEFINER-only access.")
+    if "Payments & Webhooks" in domains:
+        actions.append("Verify webhook signature validation, replay handling, and idempotency before accepting payment state changes.")
+    if "AI / LLM Safety" in domains:
+        actions.append("Add prompt-injection tests and allowlist every tool/action the model can trigger.")
+    if "Developer Tooling" in domains:
+        actions.append("Review local/CI scripts that spawn commands before connecting them to AI-agent workflows.")
+    if not actions:
+        for finding in findings:
+            if len(actions) >= limit:
+                break
+            action = finding.fix
+            if action not in actions:
+                actions.append(action)
+    return actions[:limit]
+
+
+def render_bucket_summary(findings: list[Finding]) -> list[str]:
+    rows = [["Domain", "Risk", "Findings", "Status"]]
+    for row in bucket_summary_rows(findings):
+        rows.append([row["domain"], row["risk"], str(row["count"]), row["status"]])
+    return render_ascii_table_with_limits(rows, [28, 10, 8, 24])
+
+
+def bucket_summary_rows(findings: list[Finding]) -> list[dict[str, object]]:
+    rows = []
+    for domain, domain_findings in bucket_findings(findings).items():
+        risk = highest_product_risk(domain_findings)
+        rows.append(
+            {
+                "domain": domain,
+                "risk": risk,
+                "count": len(domain_findings),
+                "status": status_for_risk(risk),
+            }
+        )
+    return rows
+
+
+def highest_product_risk(findings: list[Finding]) -> str:
+    order = {"Blocker": 4, "High": 3, "Medium": 2, "Low": 1, "Info": 0}
+    return max(
+        (finding.product_risk or product_risk_for_severity(finding.severity) for finding in findings),
+        key=lambda item: order.get(item, 0),
+        default="Info",
+    )
+
+
+def status_for_risk(risk: str) -> str:
+    return {
+        "Blocker": "Needs fix before ship",
+        "High": "Needs owner review",
+        "Medium": "Needs verification",
+        "Low": "Optional hardening",
+        "Info": "Informational",
+    }.get(risk, "Needs review")
+
+
+def primary_blocker_reason(findings: list[Finding]) -> str | None:
+    for finding in findings:
+        if (finding.product_risk or product_risk_for_severity(finding.severity)) == "Blocker":
+            if finding.category == "secrets":
+                return "Credentials detected in env, source, or build output"
+            return finding.title
+    return None
+
+
 def render_bucket_table(findings: list[Finding], use_color: bool) -> list[str]:
-    rows = [["Risk", "Conf", "Location", "Issue", "Product impact"]]
+    rows = [["Risk", "Conf", "Asset", "Location", "Issue", "Product impact"]]
     for finding in findings:
         data = finding.to_dict()
         rows.append(
             [
                 data["product_risk"],
                 data["confidence"],
+                data["asset_context"],
                 location(finding),
                 f"{finding.title} ({finding.rule_id})",
                 finding.message,
             ]
         )
-    table = render_ascii_table(rows)
+    table = render_ascii_table_with_limits(rows, [10, 13, 16, 32, 40, 56])
     lines = table[:]
     lines.append("")
     for index, finding in enumerate(findings, start=1):
@@ -222,6 +420,11 @@ def render_bucket_table(findings: list[Finding], use_color: bool) -> list[str]:
 
 def render_ascii_table(rows: list[list[str]]) -> list[str]:
     widths = [min(max(len(str(row[i])) for row in rows), limit) for i, limit in enumerate([10, 8, 32, 40, 56])]
+    return render_ascii_table_with_limits(rows, widths)
+
+
+def render_ascii_table_with_limits(rows: list[list[str]], limits: list[int]) -> list[str]:
+    widths = [min(max(len(str(row[i])) for row in rows), limits[i]) for i in range(len(limits))]
     rendered: list[str] = []
     for row_index, row in enumerate(rows):
         cells = [clip(str(value), widths[index]).ljust(widths[index]) for index, value in enumerate(row)]
@@ -259,3 +462,8 @@ def wrap_inline(value: str) -> str:
 def escape_md(value: object) -> str:
     text = "" if value is None else str(value)
     return text.replace("|", "\\|").replace("\n", "<br>")
+
+
+def verification_fence(value: str) -> str:
+    shell_hints = ("git ", "gitleaks ", "vibeauditor ", "npm ", "pnpm ", "yarn ", "pytest", "supabase ")
+    return "bash" if any(str(value).strip().startswith(hint) or f"; {hint}" in str(value) for hint in shell_hints) else "text"

@@ -4,11 +4,12 @@ import argparse
 import sys
 from pathlib import Path
 
+from .config import apply_suppressions, load_config
 from .external import check_available_scanners, run_external_scanners
 from .files import build_context
 from .models import SEVERITY_ORDER
 from .profiles import get_profile, profile_names
-from .report import render_text, write_json, write_markdown
+from .report import render_text, write_github_markdown, write_json, write_markdown
 from .rules import run_builtin_rules
 
 
@@ -26,6 +27,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--json", dest="json_path", help="Write machine-readable JSON report to this path.")
     parser.add_argument("--markdown", dest="markdown_path", help="Write a bucketed Markdown report to this path.")
+    parser.add_argument("--github-markdown", dest="github_markdown_path", help="Write a GitHub issue-friendly Markdown report to this path.")
     parser.add_argument(
         "--external",
         action="store_true",
@@ -46,7 +48,8 @@ def main(argv: list[str] | None = None) -> int:
 
     context = build_context(root)
     profile = get_profile(args.profile)
-    findings = run_builtin_rules(context)
+    config = load_config(root)
+    findings = apply_suppressions(run_builtin_rules(context), config)
     external = run_external_scanners(root) if args.external else check_available_scanners()
 
     print(render_text(findings, external, use_color=not args.no_color, profile=profile))
@@ -55,6 +58,8 @@ def main(argv: list[str] | None = None) -> int:
         write_json(Path(args.json_path), findings, external, profile=profile)
     if args.markdown_path:
         write_markdown(Path(args.markdown_path), findings, external, profile=profile)
+    if args.github_markdown_path:
+        write_github_markdown(Path(args.github_markdown_path), findings, external, profile=profile)
 
     if args.fail_on and should_fail(findings, args.fail_on):
         return 2

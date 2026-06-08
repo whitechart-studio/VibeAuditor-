@@ -1,0 +1,8 @@
+# Example suppression file.
+# Copy to your project root as .vibeauditor.toml only when you have reviewed a
+# finding and intentionally accept or defer it.
+
+[[suppress]]
+fingerprint = "replace-with-finding-fingerprint"
+reason = "Explain why this risk is accepted or deferred."
+expires = "2026-07-01"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from pathlib import Path
 
 from .files import relative_path, safe_read
 from .models import Finding, ScanContext
@@ -69,7 +70,9 @@ def check_env_files(context: ScanContext) -> Iterable[Finding]:
         rel = relative_path(context.root, path)
         text = safe_read(path)
         tracked_text = "committed" if is_tracked(context, path) else "present locally"
-        severity = "critical" if ENV_SECRET_HINTS.search(text) else "medium"
+        has_secret_hint = ENV_SECRET_HINTS.search(text)
+        severity = "critical" if has_secret_hint and is_tracked(context, path) else "medium"
+        product_risk = "Blocker" if has_secret_hint and is_tracked(context, path) else "Medium"
         yield Finding(
             rule_id="VA001",
             title="Environment file contains deploy-time configuration",
@@ -77,14 +80,16 @@ def check_env_files(context: ScanContext) -> Iterable[Finding]:
             path=rel,
             line=1,
             category="secrets",
-            confidence="high" if is_tracked(context, path) else "medium",
+            product_risk=product_risk,
+            confidence="confirmed" if is_tracked(context, path) else "needs_review",
+            asset_context=asset_context(context, path),
             message=f"An environment file is {tracked_text}. AI-built apps often leak live keys through env files and build artifacts.",
             fix="Move real values to your deployment secret store, commit only .env.example, and rotate any key that was exposed.",
             ai_fix_prompt=(
                 "Audit environment handling for this project. Keep real secrets out of git, keep only placeholders in .env.example, "
                 "verify .gitignore excludes real .env files, and rotate any exposed Supabase or provider keys. Do not remove required runtime env usage."
             ),
-            verification="Run git ls-files for .env files, run gitleaks, rebuild the app, and confirm no secret values appear in build output.",
+            verification="git ls-files .env .env.local .env.production dist-ssr/entry-server.js; gitleaks detect --source .; vibeauditor . --profile next-supabase",
         )
 
 
@@ -99,6 +104,7 @@ def check_file_contents(context: ScanContext) -> Iterable[Finding]:
         for line_no, line in enumerate(lines, start=1):
             for secret_name, pattern in SECRET_PATTERNS:
                 if pattern.search(line):
+                    context_label = asset_context(context, path)
                     yield Finding(
                         rule_id="VA002",
                         title=f"Possible {secret_name} exposed",
@@ -106,9 +112,14 @@ def check_file_contents(context: ScanContext) -> Iterable[Finding]:
                         path=rel,
                         line=line_no,
                         category="secrets",
-                        message=f"A value matching {secret_name} appears in source.",
+                        product_risk="Blocker",
+                        confidence="confirmed",
+                        asset_context=context_label,
+                        message=secret_message(secret_name, context_label),
                         fix="Remove the value from git history if committed, rotate it, and load it from runtime secrets.",
                         evidence=redact(line),
+                        ai_fix_prompt=secret_ai_prompt(secret_name, context_label),
+                        verification=secret_verification(context_label),
                     )
             if CLIENT_EXPOSED_SECRET.search(line):
                 yield Finding(
@@ -118,26 +129,34 @@ def check_file_contents(context: ScanContext) -> Iterable[Finding]:
                     path=rel,
                     line=line_no,
                     category="secrets",
+                    product_risk="Blocker",
+                    confidence="confirmed",
+                    asset_context=asset_context(context, path),
                     message="A public client env prefix is combined with a secret-like name.",
                     fix="Never expose service-role, private, token, or password values with NEXT_PUBLIC, VITE, or PUBLIC prefixes.",
                     evidence=line.strip(),
                 )
             if not is_doc_file(path) and UNSAFE_EXEC_HINT.search(line):
+                dev_tooling = is_developer_script(path)
                 yield Finding(
                     rule_id="VA004",
                     title="Unsafe dynamic execution surface",
-                    severity="high",
+                    severity="medium" if dev_tooling else "high",
                     path=rel,
                     line=line_no,
-                    category="code-execution",
-                    confidence="medium",
-                    message="Dynamic code or shell execution is present. This is dangerous when AI-generated inputs can reach it.",
+                    category="developer-tooling" if dev_tooling else "code-execution",
+                    product_risk="Low" if dev_tooling else "High",
+                    confidence="needs_review" if dev_tooling else "likely",
+                    asset_context=asset_context(context, path),
+                    message=(
+                        "A developer script uses dynamic process execution. This is usually acceptable when commands are static, "
+                        "but should be reviewed before reuse in CI or AI-agent workflows."
+                        if dev_tooling
+                        else "Dynamic code or shell execution is present. This is dangerous when user or model-generated input can reach it."
+                    ),
                     fix="Replace dynamic execution with explicit functions, allowlists, or safe subprocess APIs without shell evaluation.",
                     evidence=line.strip(),
-                    ai_fix_prompt=(
-                        "Review this dynamic execution path. If it is necessary, ensure all inputs are hardcoded or allowlisted, "
-                        "avoid shell evaluation, and add a test proving user-controlled or model-generated input cannot reach it."
-                    ),
+                    ai_fix_prompt=dynamic_execution_prompt(dev_tooling),
                 )
 
         if looks_like_unguarded_api_write(text):
@@ -148,8 +167,10 @@ def check_file_contents(context: ScanContext) -> Iterable[Finding]:
                 path=rel,
                 line=find_first_line(lines, DB_WRITE_HINT),
                 category="auth",
-                confidence="medium",
-                message="This file looks like an API handler that writes data without an obvious auth/session check.",
+                product_risk="High",
+                confidence="needs_review",
+                asset_context=asset_context(context, path),
+                message="A write path updates application data without an obvious nearby auth or ownership check. If RLS is the guardrail, it should be tested explicitly.",
                 fix="Require user authentication and authorization before write/update/delete operations.",
                 ai_fix_prompt=(
                     "Review this write path for auth and ownership. Ensure the authenticated user is derived from the server/session, "
@@ -165,7 +186,8 @@ def check_file_contents(context: ScanContext) -> Iterable[Finding]:
                 path=rel,
                 line=find_first_line(lines, STRIPE_WEBHOOK_HINT),
                 category="payments",
-                confidence="high",
+                confidence="likely",
+                asset_context=asset_context(context, path),
                 message="This looks like a webhook handler but no Stripe signature verification was detected.",
                 fix="Use stripe.webhooks.constructEvent with the raw body and STRIPE_WEBHOOK_SECRET before trusting the event.",
                 ai_fix_prompt=(
@@ -182,7 +204,8 @@ def check_file_contents(context: ScanContext) -> Iterable[Finding]:
                 path=rel,
                 line=find_first_line(lines, LLM_PROMPT_HINT),
                 category="ai",
-                confidence="medium",
+                confidence="needs_review",
+                asset_context=asset_context(context, path),
                 message="User-controlled input appears near prompt construction. This can enable prompt injection or tool misuse.",
                 fix="Separate trusted instructions from user content, validate tool inputs, and add allowlists for actions the model can trigger.",
                 ai_fix_prompt=(
@@ -199,8 +222,10 @@ def check_file_contents(context: ScanContext) -> Iterable[Finding]:
                 path=rel,
                 line=find_text_line(lines, "enable row level security"),
                 category="supabase",
-                confidence="medium",
-                message="RLS is enabled, but this SQL file does not appear to define policies.",
+                product_risk="Medium",
+                confidence="needs_review",
+                asset_context=asset_context(context, path),
+                message="RLS is enabled without nearby table policies. This can be intentional for service-role or SECURITY DEFINER access, but direct anon/authenticated access must be denied.",
                 fix="Add explicit SELECT/INSERT/UPDATE/DELETE policies and test them with anon and authenticated roles.",
                 ai_fix_prompt=(
                     "Review this Supabase RLS migration. If direct table access is intended, add explicit policies for each role/action. "
@@ -223,7 +248,8 @@ def check_dependency_manifests(context: ScanContext) -> Iterable[Finding]:
                 path=rel,
                 line=1,
                 category="dependencies",
-                confidence="high",
+                confidence="confirmed",
+                asset_context=asset_context(context, path),
                 message="No npm, pnpm, or yarn lockfile was found. AI agents may install drifting or vulnerable package versions.",
                 fix="Commit a lockfile and run OSV-Scanner or Trivy in CI.",
                 ai_fix_prompt="Generate and commit the appropriate JavaScript lockfile, then run dependency vulnerability scanning in CI.",
@@ -239,7 +265,8 @@ def check_dependency_manifests(context: ScanContext) -> Iterable[Finding]:
                     path=relative_path(context.root, path),
                     line=1,
                     category="dependencies",
-                    confidence="high",
+                    confidence="confirmed",
+                    asset_context=asset_context(context, path),
                     message="requirements.txt exists without a detected lockfile.",
                     fix="Use uv, pip-tools, Poetry, or another lockfile workflow for reproducible installs.",
                     ai_fix_prompt="Add a reproducible Python dependency lock workflow and document the install command for contributors.",
@@ -287,6 +314,66 @@ def severity_rank(severity: str) -> int:
 
 def is_doc_file(path) -> bool:
     return path.suffix.lower() in DOC_EXTENSIONS or "docs" in path.parts
+
+
+def is_developer_script(path: Path) -> bool:
+    return "scripts" in path.parts or path.name.startswith("run-")
+
+
+def asset_context(context: ScanContext, path: Path) -> str:
+    parts = set(path.relative_to(context.root).parts)
+    suffix = path.suffix.lower()
+    if path.name.startswith(".env"):
+        return "tracked_env" if is_tracked(context, path) else "local_env"
+    if "dist" in parts or "dist-ssr" in parts or "build" in parts or ".next" in parts:
+        return "build_artifact"
+    if suffix in DOC_EXTENSIONS or "docs" in parts:
+        return "documentation"
+    if "scripts" in parts:
+        return "developer_script"
+    if "migrations" in parts or suffix == ".sql":
+        return "database_migration"
+    return "tracked_source" if is_tracked(context, path) else "local_source"
+
+
+def secret_message(secret_name: str, context_label: str) -> str:
+    if "Supabase" in secret_name:
+        return (
+            f"A Supabase JWT-like credential appears in {context_label}. If this is a service-role key, it can bypass RLS "
+            "and expose marketplace user, worker, contractor, OTP, or payment data."
+        )
+    return f"A value matching {secret_name} appears in {context_label}. Exposed credentials can let attackers access third-party services or production data."
+
+
+def secret_ai_prompt(secret_name: str, context_label: str) -> str:
+    return (
+        f"You are fixing credential exposure in this project. A {secret_name} was found in {context_label}. "
+        "Do not remove required runtime env usage. Ensure browser/client code only receives public anon keys, never service-role or private keys. "
+        "Remove real values from env/build artifacts, update .env.example with placeholders, verify .gitignore excludes local env and generated build output, "
+        "rotate any exposed credential, then rerun vibeAuditor and gitleaks."
+    )
+
+
+def secret_verification(context_label: str) -> str:
+    return (
+        "git ls-files .env .env.local dist-ssr/entry-server.js; "
+        "gitleaks detect --source .; "
+        "vibeauditor . --profile next-supabase"
+        if context_label in {"local_env", "build_artifact", "tracked_env"}
+        else "gitleaks detect --source .; vibeauditor ."
+    )
+
+
+def dynamic_execution_prompt(dev_tooling: bool) -> str:
+    if dev_tooling:
+        return (
+            "Review this developer script. Confirm spawned commands and arguments are static or allowlisted, "
+            "document that it is not exposed to user/model input, and keep it outside production runtime paths."
+        )
+    return (
+        "Review this dynamic execution path. If it is necessary, ensure all inputs are hardcoded or allowlisted, "
+        "avoid shell evaluation, and add a test proving user-controlled or model-generated input cannot reach it."
+    )
 
 
 def is_tracked(context: ScanContext, path) -> bool:

@@ -50,6 +50,13 @@ Write a bucketed Markdown report for GitHub issues, PR comments, or product revi
 PYTHONPATH=src python3 -m vibeauditor . --markdown vibeauditor-report.md
 ```
 
+Write a GitHub issue-friendly report with detailed finding sections instead of
+wide tables:
+
+```bash
+PYTHONPATH=src python3 -m vibeauditor . --github-markdown vibeauditor-github.md
+```
+
 Fail CI when high or critical findings exist:
 
 ```bash
@@ -124,7 +131,8 @@ Each finding includes:
 
 - severity
 - product risk: `Blocker`, `High`, `Medium`, `Low`
-- confidence
+- confidence: `confirmed`, `likely`, `needs_review`
+- asset context: `tracked_source`, `local_env`, `build_artifact`, `developer_script`, `database_migration`, etc.
 - domain bucket
 - stable fingerprint
 - product impact
@@ -136,6 +144,21 @@ This structure is designed for the next GitHub workflow:
 ```text
 scan project -> bucket findings -> create/update GitHub issues -> close fixed buckets
 ```
+
+## Suppressions
+
+Known accepted-risk findings can be suppressed with `.vibeauditor.toml`.
+Suppressions use stable fingerprints from the JSON or GitHub Markdown report.
+
+```toml
+[[suppress]]
+fingerprint = "abc123def4567890"
+reason = "Local developer script only spawns a static Semgrep command."
+expires = "2026-07-01"
+```
+
+Suppressions should always include a reason and an expiry date so risk does not
+silently disappear forever.
 
 ## Planned Rule Packs
 
