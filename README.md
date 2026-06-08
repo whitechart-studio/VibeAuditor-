@@ -28,6 +28,18 @@ scanners such as Trivy, Semgrep, OSV-Scanner, Gitleaks, Syft, Grype, and ZAP.
 
 ## Quick Start
 
+Install from PyPI:
+
+```bash
+pipx install vibeauditor
+```
+
+Or with pip:
+
+```bash
+pip install vibeauditor
+```
+
 Install from a local checkout:
 
 ```bash
